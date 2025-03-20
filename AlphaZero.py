@@ -132,40 +132,87 @@ class GomokuEnv:
         self.win_paths = []
         self.action_history = []
 
-# 神经网络模型
-class AlphaZeroNet(nn.Module):
-    def __init__(self):
+class ResidualBlock(nn.Module):
+    """带SE注意力的残差块"""
+    def __init__(self, channels):
         super().__init__()
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=3, padding=1) # 输入通道数为4，输出通道数为32
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.se = SEBlock(channels)  # 添加SE注意力
         
-        # 策略头
-        self.policy_conv = nn.Conv2d(128, 2, 1)
-        self.policy_fc = nn.Linear(2*BOARD_SIZE*BOARD_SIZE, BOARD_SIZE*BOARD_SIZE)
+    def forward(self, x):
+        residual = x
+        x = F.relu(self.bn1(self.conv1(x)))  # 使用relu激活函数
+        x = self.bn2(self.conv2(x))
+        x += residual
+        x = self.se(x)  # 应用SE注意力
+        return F.relu(x)
+
+class SEBlock(nn.Module):
+    """通道注意力机制"""
+    def __init__(self, channel, reduction=16):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction),
+            nn.ReLU(),
+            nn.Linear(channel // reduction, channel),
+            nn.Sigmoid()
+        )
         
-        # 价值头
-        self.value_conv = nn.Conv2d(128, 1, 1)
-        self.value_fc1 = nn.Linear(BOARD_SIZE*BOARD_SIZE, 64)
-        self.value_fc2 = nn.Linear(64, 1)
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
+class AlphaZeroNet(nn.Module):
+    def __init__(self, in_channels=4, residual_blocks=2, channels=128):
+        super().__init__()
+        # 初始卷积层
+        self.conv = nn.Conv2d(in_channels, channels, kernel_size=3, padding=1)
+        self.bn = nn.BatchNorm2d(channels)
+        
+        # 残差块堆叠
+        self.res_blocks = nn.Sequential(
+            *[ResidualBlock(channels) for _ in range(residual_blocks)])
+        
+        # 策略头（走子概率预测）
+        self.policy_head = nn.Sequential(
+            nn.Conv2d(channels, 16, kernel_size=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(16 * BOARD_SIZE * BOARD_SIZE, 512),
+            nn.ReLU(),
+            nn.Linear(512, BOARD_SIZE * BOARD_SIZE))
+        
+        # 价值头（局面评估）
+        self.value_head = nn.Sequential(
+            nn.Conv2d(channels, 2, kernel_size=1),
+            nn.BatchNorm2d(2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(2 * BOARD_SIZE * BOARD_SIZE, 256),
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Tanh())
 
     def forward(self, x):
-        # 输入形状: (batch_size, channels, BOARD_SIZE, BOARD_SIZE)
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.relu(self.conv3(x))
+        # 主干网络
+        x = F.relu(self.bn(self.conv(x)))
+        x = self.res_blocks(x)
         
         # 策略输出
-        p = torch.relu(self.policy_conv(x))
-        p = p.view(p.size(0), -1)
-        p = self.policy_fc(p)
-        policy = torch.softmax(p, dim=1)
+        policy = self.policy_head(x)
+        policy = F.softmax(policy, dim=1)
         
         # 价值输出
-        v = torch.relu(self.value_conv(x))
-        v = v.view(v.size(0), -1)
-        v = torch.relu(self.value_fc1(v))
-        value = torch.tanh(self.value_fc2(v))
+        value = self.value_head(x)
         
         return policy, value
 
