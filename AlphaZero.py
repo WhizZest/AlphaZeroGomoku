@@ -181,11 +181,11 @@ class AlphaZeroNet(nn.Module):
         
         # 策略头（走子概率预测）
         self.policy_head = nn.Sequential(
-            nn.Conv2d(channels, 8, kernel_size=1),
-            nn.BatchNorm2d(8),
+            nn.Conv2d(channels, 4, kernel_size=1),
+            nn.BatchNorm2d(4),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(8 * BOARD_SIZE * BOARD_SIZE, BOARD_SIZE * BOARD_SIZE))
+            nn.Linear(4 * BOARD_SIZE * BOARD_SIZE, BOARD_SIZE * BOARD_SIZE))
         
         # 价值头（局面评估）
         self.value_head = nn.Sequential(
@@ -450,9 +450,8 @@ def softmax(x):
     return e_x / e_x.sum()
 
 class MCTS:
-    def __init__(self, model, isNew=True):
-        self.model = AlphaZeroNet().to(mcts_device) if isNew else AlphaZeroNetOld().to(mcts_device)
-        self.model.load_state_dict(model.state_dict())
+    def __init__(self, model):
+        self.model = model
         self.c_puct = c_puct  # 探索系数
         self.temperature = temperature  # 添加温度参数
         self.dirichlet_alpha = dirichlet_alpha  # Dirichlet分布参数α
@@ -955,10 +954,9 @@ def play_single_game_with_best(global_model, bExit, result_queue, best_model, cu
     global epsilon_first
     temperature_decay = (temperature - temperature_end) / (Max_step - temperature_decay_start)  # 计算温度衰减率
     env = GomokuEnv()
-    game_data = []
     steps = 0
     mcts = MCTS(model=global_model)
-    mcts_best = MCTS(model=best_model, isNew=False)
+    mcts_best = MCTS(model=best_model)
     steps_TakeBack = -1
     buffer = []  # 缓冲区
     save_buffer_flag = False
@@ -1075,30 +1073,34 @@ class AlphaZeroTrainer:
         self.model = AlphaZeroNet().to(device)  # 初始化时转移到设备
         if modelFileName is not None:
             filePath = os.path.join(self.script_dir, modelFileName)
-            self.model.load_state_dict(torch.load(filePath, map_location=device, weights_only=True))
-            print("加载模型成功")
+            # 检查文件是否存在
+            if os.path.exists(filePath):
+                self.model.load_state_dict(torch.load(filePath, map_location=device, weights_only=True))
+                print("加载模型成功")
         self.global_model = AlphaZeroNet().to(mcts_device)  # 初始化时转移到设备
         self.global_model.load_state_dict(self.model.state_dict())
         self.global_model.share_memory()  # 共享模型参数
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
+        self.best_model_old = None
         if oldBestModelFileName is not None:
-            self.best_model_old = AlphaZeroNetOld().to(mcts_device)
             filePath = os.path.join(self.script_dir, oldBestModelFileName)
-            self.best_model_old.load_state_dict(torch.load(filePath, map_location=mcts_device, weights_only=True))
-            self.best_model_old.eval()
-            self.best_model_old.share_memory()  # 共享模型参数
-            print("加载旧最佳模型成功")
-        else:
-            self.best_model_old = None
+            # 检查文件是否存在
+            if os.path.exists(filePath):
+                self.best_model_old = AlphaZeroNetOld().to(mcts_device)
+                self.best_model_old.load_state_dict(torch.load(filePath, map_location=mcts_device, weights_only=True))
+                self.best_model_old.eval()
+                self.best_model_old.share_memory()  # 共享模型参数
+                print("加载旧最佳模型成功")
+        self.best_model = None
         if bestModelFileName is not None:
-            self.best_model = AlphaZeroNet().to(mcts_device)
             filePath = os.path.join(self.script_dir, bestModelFileName)
-            self.best_model.load_state_dict(torch.load(filePath, map_location=mcts_device, weights_only=True))
-            self.best_model.eval()
-            self.best_model.share_memory()  # 共享模型参数
-            print("加载最佳模型成功")
-        else:
-            self.best_model = None
+            # 检查文件是否存在
+            if os.path.exists(filePath):
+                self.best_model = AlphaZeroNet().to(mcts_device)
+                self.best_model.load_state_dict(torch.load(filePath, map_location=mcts_device, weights_only=True))
+                self.best_model.eval()
+                self.best_model.share_memory()  # 共享模型参数
+                print("加载最佳模型成功")
         self.buffer = deque(maxlen=buffer_size)
         self.batch_data_count = 0
         self.cache_file = os.path.join(self.script_dir, cache_file)
@@ -1269,8 +1271,7 @@ class AlphaZeroTrainer:
                 if not isinstance(e, queue.Empty):
                     print(f"Error2 processing queue: {e}")
                 break
-
-        self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
+        
         print(f"Collected {result_count} samples, avereage steps: {result_count / num_games / 8}")
     
     def newModel_vs_oldModel(self, num_games=100, bExit=None):
@@ -1327,7 +1328,6 @@ class AlphaZeroTrainer:
                     print(f"Error2 processing queue: {e}")
                 break
 
-        self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
         print(f"[newModel_vs_oldModel] Collected {result_count} samples, avereage steps: {result_count / num_games / 8}")
     
     def train(self, batch_size=32, epochs=10):
@@ -1356,6 +1356,7 @@ class AlphaZeroTrainer:
             loss.backward()
             self.optimizer.step()
         entropy = -torch.mean(torch.sum(policy_pred * torch.log(policy_pred + 1e-10), dim=1))
+        self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
         print(f"Training completed, loss: {loss.item():.4f}, entropy: {entropy.item():.4f}")
 
     def evaluate(self, num_games=20, bExit=None):
@@ -1582,8 +1583,9 @@ class AlphaZeroTrainer:
 
 if __name__ == "__main__":
     print(f"Using device: {device}, mcts_device: {mcts_device}, cpu_cores: {mp.cpu_count()}")
+    mp.set_start_method('spawn', force=True)
     trainer = AlphaZeroTrainer(modelFileName="model/az_model_final.pth", isEvaluate=isEvaluate, bestModelFileName="model/az_model_best.pth", oldBestModelFileName="model/az_model_550old.pth")
     '''trainer.load_cache_list(['cache_125.pkl', 'cache_195.pkl', 'cache_330.pkl', 'cache_360.pkl'
                              , 'cache_375.pkl', 'cache_380.pkl', 'cache_435.pkl', 'cache_465.pkl', 'cache_500.pkl', 'cache_550.pkl'])'''
     trainer.load_cache()
-    trainer.run(iterations=total_iterations, starting_iteration=2014)
+    trainer.run(iterations=total_iterations, starting_iteration=0)
