@@ -38,14 +38,14 @@ train_frequency = 512  # 每隔多少步进行一次训练
 num_games_process = 5  # 并行训练进程数
 num_games_new_vs_old = 0 # 新旧模型并行对战的游戏进程数量
 isEvaluate = True # 是否进行评估，评估比较耗时，如果是15x15的棋盘，建议关闭评估
-evaluate_frequency = 250 # 每隔多少次迭代进行一次评估
 evaluate_games_num = 10  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
 learning_rate = 0.001  # 学习率
-buffer_size = 50000  # 经验回放缓冲区大小
+buffer_size = 100000  # 经验回放缓冲区大小
 Max_game_num = 20000 # 游戏总局数
 
 # 子进程（环境采样）参数
+evaluate_frequency = 250 # 每隔多少次迭代进行一次评估
 MCTS_simulations = 800 # 每次选择动作时进行的蒙特卡洛树搜索模拟次数
 MCTS_simulations_takeback = 1600 # 每次回退时进行的蒙特卡洛树搜索模拟次数（多进程参数）
 MCTS_parant_root_reserve_nums = [0] # 父节点保留数量，如果数值太大，可能会导致内存溢出，应根据自己的内存大小进行调整，还与棋盘大小有关，如果是9x9，可以适当调大，如果是15x15，可以适当调小（多进程参数）
@@ -1006,13 +1006,13 @@ def self_play_worker(global_model, bExit, result_queue, shared_counter, task_que
             break
         with shared_counter.get_lock():
             shared_counter.value += 1
+            if shared_counter.value > 0 and shared_counter.value % 25 == 0: # 每25局自我对弈保存一次模型，不需要暂停子进程
+                task_queue.put(TaskType.SAVE_CHECKPOINT)  # 添加保存模型任务到队列
+                print(f"Self-play worker {mp.current_process().pid} trigger save model.")
             if isEvaluate and shared_counter.value > 0 and shared_counter.value % evaluate_frequency == 0:                
                 task_queue.put(TaskType.EVALUATE)  # 添加评估任务到队列
                 pause_event.set()
                 print(f"Self-play worker {mp.current_process().pid} trigger evaluation.")
-            if shared_counter.value > 0 and shared_counter.value % 25 == 0: # 每25局自我对弈保存一次模型，不需要暂停子进程
-                task_queue.put(TaskType.SAVE_CHECKPOINT)  # 添加保存模型任务到队列
-                print(f"Self-play worker {mp.current_process().pid} trigger save model.")
         
         if pause_event.is_set(): # 如果收到暂停信号，则等待
             print(f"Self-play worker {mp.current_process().pid} paused, waiting for resume...")
@@ -1690,4 +1690,4 @@ if __name__ == "__main__":
     '''trainer.load_cache_list(['cache_125.pkl', 'cache_195.pkl', 'cache_330.pkl', 'cache_360.pkl'
                              , 'cache_375.pkl', 'cache_380.pkl', 'cache_435.pkl', 'cache_465.pkl', 'cache_500.pkl', 'cache_550.pkl'])'''
     trainer.load_cache()
-    trainer.run(starting_game_Num=119)
+    trainer.run(starting_game_Num=0)
