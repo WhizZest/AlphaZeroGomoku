@@ -122,7 +122,7 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
         else:
             time.sleep(wait_time)
             if result is not None and result == -1:
-                board_img = capture_board((800, 356, 135, 124))
+                board_img = capture_board((1150, 514, 119, 95))
                 # 平均颜色为白色
                 if np.mean(board_img) > 210:
                     print(f"AI 认输")
@@ -189,12 +189,12 @@ if __name__ == "__main__":
     if actionMapToCoords is not None:
         # 获取本地文件夹路径，与"model"文件夹拼接,得到模型文件路径,与当前模型文件名拼接，得到完整模型文件路径
         local_folder = os.path.dirname(os.path.abspath(__file__))
-        model_file_path = os.path.join(local_folder, "model", "az_model_260.pth")
+        model_file_path = os.path.join(local_folder, "model", "az_model_best.pth")
         ai_play = AlphaZeroNet().to(mcts_device)
         ai_play.load_state_dict(torch.load(model_file_path, map_location=mcts_device, weights_only=True))
         ai_play.eval()
         current_model_player = 1  # 当前模型玩家, 1表示黑子，-1表示白子
-        MCTS_simulations = 200  # MCTS模拟次数
+        MCTS_simulations = 800  # MCTS模拟次数
         result, buffer = evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_simulations)
         save_buffer(buffer)
         print(f"评估结果: {result}")
