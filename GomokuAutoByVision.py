@@ -109,10 +109,10 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
     while not env.done:
         if env.current_player == current_model_player:
             action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
-            if result is not None and result == -1 and steps_TakeBack < 0 and len(env.action_history) >= 2:
-                steps_TakeBack = len(env.action_history) - 2
+            '''if result is not None and result == -1 and steps_TakeBack < 0 and len(env.action_history) >= 2:
+                steps_TakeBack = len(env.action_history) - 2'''
             value_pred_list.append(np.clip(value_pred, -1, 1))
-            if value_pred < value_pred_min:
+            if value_pred < value_pred_min and value_pred_min > -1:
                 value_pred_min = value_pred
                 value_pred_min_step = len(env.action_history)
             x, y = actionMapToCoords[action]
