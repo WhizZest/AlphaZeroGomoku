@@ -1338,12 +1338,11 @@ class AlphaZeroTrainer:
             current_time = time.time()
             if current_time - last_config_check > 10:  # 每10秒检查一次配置文件
                 self._read_param_from_config()  # 读取配置文件参数
-                eval_gamedatas = self.load_eval_cache()
                 if self.best_model_old is not None and num_games_new_vs_old > 0:
                     task_queue.put(TaskType.NEW_MODEL_VS_OLD_MODEL)
                     pause_event.set()
                     print(f"Trigger newModel_vs_oldModel with {num_games_new_vs_old} games, processID: {mp.current_process().pid}")
-                elif len(eval_gamedatas) > 0:
+                elif not self.is_eval_cache_empty():
                     task_queue.put(TaskType.EVALUATE_GAME_DATA)
                     pause_event.set()
                     print(f"Trigger self_play_eval_gamedata, processID: {mp.current_process().pid}")
@@ -1646,6 +1645,19 @@ class AlphaZeroTrainer:
         self.buffer = deque(buffer_temp, maxlen=len(buffer_temp))
         print("缓存已从硬盘加载, buffer size:", len(self.buffer))
     
+    def is_eval_cache_empty(self):
+        # 检查self.script_dir路径下eval_buffer文件夹是否为空
+        eval_buffer_dir = os.path.join(script_dir, "eval_buffer")
+        if os.path.exists(eval_buffer_dir):
+            pkl_files = [f for f in os.listdir(eval_buffer_dir) if f.endswith('.pkl')]
+            if len(pkl_files) == 0: # 如果文件夹为空
+                return True
+            else:
+                print(f"eval_buffer文件夹不为空, 包含 {len(pkl_files)} 个pkl文件")
+                return False
+        else:
+            return True
+        
     def load_eval_cache(self):
         # 加载self.script_dir路径下eval_buffer文件夹中的所有pkl文件，每个文件都是一个包含若干评估数据的列表，把这些列表合并为一个列表eval_gamedatas
         eval_gamedatas = []
