@@ -41,7 +41,7 @@ isEvaluate = True # 是否进行评估，评估比较耗时，如果是15x15的�
 evaluate_games_num = 10  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
 learning_rate = 0.001  # 学习率
-buffer_size = 100000  # 经验回放缓冲区大小
+buffer_size = 500000  # 经验回放缓冲区大小
 Max_game_num = 20000 # 游戏总局数
 
 # 子进程（环境采样）参数
@@ -1008,7 +1008,7 @@ def self_play_worker(global_model, bExit, result_queue, shared_counter, task_que
             shared_counter.value += 1
             if shared_counter.value > 0 and shared_counter.value % 25 == 0: # 每25局自我对弈保存一次模型，不需要暂停子进程
                 task_queue.put(TaskType.SAVE_CHECKPOINT)  # 添加保存模型任务到队列
-                print(f"Self-play worker {mp.current_process().pid} trigger save model.")
+                print(f"Self-play worker {mp.current_process().pid} trigger save model. evaluate_frequency: {evaluate_frequency}")
             if isEvaluate and shared_counter.value > 0 and shared_counter.value % evaluate_frequency == 0:                
                 task_queue.put(TaskType.EVALUATE)  # 添加评估任务到队列
                 pause_event.set()
@@ -1052,9 +1052,9 @@ def play_single_game_with_best(global_model, bExit, result_queue, best_model, cu
 
         if env.current_player == current_model_player:
             action, action_probs, value_pred, result = mcts.search(env, training=False if len(env.action_history) > 0 else True, simulations=MCTS_simulations)
-            if result is not None and result == -1 and steps_TakeBack < 0 and len(env.action_history) >= 2:
-                steps_TakeBack = len(env.action_history) - 2
-            if value_pred < value_pred_min:
+            '''if result is not None and result == -1 and steps_TakeBack < 0 and len(env.action_history) >= 2:
+                steps_TakeBack = len(env.action_history) - 2'''
+            if value_pred < value_pred_min and value_pred_min > -1:
                 value_pred_min = value_pred
                 value_pred_min_step = len(env.action_history)
         else:
@@ -1094,7 +1094,7 @@ def save_buffer(buffer):
         from datetime import datetime
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
-        filename = f"buffer_{timestamp}.pkl"
+        filename = f"buffer_{timestamp}_{os.getpid()}.pkl"
         filepath = os.path.join(script_dir, "eval_buffer", filename)
         folder = os.path.join(script_dir, "eval_buffer")
         if not os.path.exists(folder):
@@ -1105,6 +1105,10 @@ def save_buffer(buffer):
 
 def evaluate_single_game(global_model, bExit, result_queue, best_model=None, current_model_player=None):
     """ 运行一局评估对局 """
+    seed = os.getpid()
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
     env = GomokuEnv()
     mcts = MCTS(model=global_model)
     if best_model is not None:
@@ -1112,6 +1116,12 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
     else:
         mcts_pure = MCTS_Pure()
     
+    steps_TakeBack = -1
+    buffer = []  # 缓冲区
+    save_buffer_flag = False
+    value_pred_min = 1
+    value_pred_min_step = 0
+
     if current_model_player is None:
         # 随机待评估模型的玩家
         current_model_player = random.choice([1, -1])
@@ -1124,6 +1134,9 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
 
             if env.current_player == current_model_player:
                 action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
+                if value_pred < value_pred_min and value_pred_min > -1:
+                    value_pred_min = value_pred
+                    value_pred_min_step = len(env.action_history)
             else:
                 '''valid_moves = np.argwhere(env.get_valid_moves())
                 action = tuple(valid_moves[np.random.choice(len(valid_moves))])'''
@@ -1135,6 +1148,14 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
             env.step(action)
 
     result_queue.put(1 if env.winner == current_model_player else 0 if env.winner == 0 else -1)
+    if value_pred_min < -0.7:
+        save_buffer_flag = True
+        if steps_TakeBack < 0:
+            env.action_history = env.action_history[:value_pred_min_step]
+            print(f"预测胜率最低为{value_pred_min}，回退到第{value_pred_min_step+1}步")
+    if len(env.action_history) > 0 and save_buffer_flag:
+        buffer.append((env.action_history, steps_TakeBack))
+        save_buffer(buffer)
 
 # 训练流程
 class AlphaZeroTrainer:
@@ -1353,6 +1374,7 @@ class AlphaZeroTrainer:
                     task = task_queue.get()
                     if task == TaskType.EVALUATE:
                         self.evaluate(shared_game_counter=shared_counter, bExit=bExit, num_games=evaluate_games_num)
+                        self.self_play_eval_gamedata(num_games=num_games_process, bExit=bExit)
                     elif task == TaskType.SAVE_CHECKPOINT:
                         self.save_checkpoint(shared_counter.value)
                     elif task == TaskType.EVALUATE_GAME_DATA:
@@ -1452,7 +1474,25 @@ class AlphaZeroTrainer:
             value_loss = torch.mean((value_pred.squeeze() - value_targets)**2)
             loss = policy_loss + value_loss
             
+            # 检查损失的有效性
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"Warning: Invalid loss detected: {loss.item()}, skipping this batch")
+                continue
+
             loss.backward()
+            
+            # 计算梯度范数（在裁剪前）
+            pre_clip_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), 
+                max_norm=float('inf')  # 不裁剪，只计算范数
+            )
+            
+            # 检查梯度的有效性
+            if torch.isnan(pre_clip_norm) or torch.isinf(pre_clip_norm):
+                print(f"Warning: Invalid gradient norm: {pre_clip_norm}, skipping parameter update")
+                self.optimizer.zero_grad()  # 清除梯度
+                continue
+            
             self.optimizer.step()
         entropy = -torch.mean(torch.sum(policy_pred * torch.log(policy_pred + 1e-10), dim=1))
         self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
@@ -1653,7 +1693,7 @@ class AlphaZeroTrainer:
             if len(pkl_files) == 0: # 如果文件夹为空
                 return True
             else:
-                print(f"eval_buffer文件夹不为空, 包含 {len(pkl_files)} 个pkl文件")
+                print(f"eval_buffer包含 {len(pkl_files)} 个pkl文件")
                 return False
         else:
             return True
