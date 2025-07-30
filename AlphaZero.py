@@ -45,7 +45,7 @@ buffer_size = 500000  # 经验回放缓冲区大小
 Max_game_num = 20000 # 游戏总局数
 
 # 子进程（环境采样）参数
-evaluate_frequency = 250 # 每隔多少次迭代进行一次评估
+evaluate_frequency = 100 # 每隔多少次迭代进行一次评估
 MCTS_simulations = 800 # 每次选择动作时进行的蒙特卡洛树搜索模拟次数
 MCTS_simulations_takeback = 1600 # 每次回退时进行的蒙特卡洛树搜索模拟次数（多进程参数）
 MCTS_parant_root_reserve_nums = [0] # 父节点保留数量，如果数值太大，可能会导致内存溢出，应根据自己的内存大小进行调整，还与棋盘大小有关，如果是9x9，可以适当调大，如果是15x15，可以适当调小（多进程参数）
@@ -202,11 +202,11 @@ class AlphaZeroNet(nn.Module):
         
         # 价值头（局面评估）
         self.value_head = nn.Sequential(
-            nn.Conv2d(channels, 2, kernel_size=1),
-            nn.BatchNorm2d(2),
+            nn.Conv2d(channels, 1, kernel_size=1),
+            nn.BatchNorm2d(1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(2 * BOARD_SIZE * BOARD_SIZE, 64),
+            nn.Linear(BOARD_SIZE * BOARD_SIZE, 64),
             nn.ReLU(),
             nn.Linear(64, 1),
             nn.Tanh())
@@ -1742,4 +1742,4 @@ if __name__ == "__main__":
     '''trainer.load_cache_list(['cache_125.pkl', 'cache_195.pkl', 'cache_330.pkl', 'cache_360.pkl'
                              , 'cache_375.pkl', 'cache_380.pkl', 'cache_435.pkl', 'cache_465.pkl', 'cache_500.pkl', 'cache_550.pkl'])'''
     trainer.load_cache()
-    trainer.run(starting_game_Num=0)
+    trainer.run(starting_game_Num=5604)
