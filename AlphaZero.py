@@ -1531,6 +1531,7 @@ class AlphaZeroTrainer:
         lose_count = results.count(-1) # 统计败场数
         draw_count = results.count(0) # 统计平局场数
         cost_time = time.time() - start_t # 统计耗时
+        self.gameNo_history.append(shared_game_counter.value)
         self.win_history.append(win_count)
         self.lose_history.append(lose_count)
         self.draw_history.append(draw_count)
@@ -1551,7 +1552,7 @@ class AlphaZeroTrainer:
         print(f"Game No. {shared_game_counter.value}, win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
         self.update_plot()
         if self.isEvaluate:
-            plt.savefig(os.path.join(script_dir, f"az_plot_checkpoint.png"))
+            #plt.savefig(os.path.join(script_dir, f"az_plot_checkpoint.png"))
             self.save_evaluate_history_to_csv()
     
     def update_plot(self):
@@ -1571,7 +1572,7 @@ class AlphaZeroTrainer:
         bExit = mp.Value('b', False)  # 退出标志
         bStopProcess = mp.Value('b', False)  # 停止监听进程
         shared_game_counter = mp.Value('i', starting_game_Num)  # 游戏局数
-        if self.isEvaluate:
+        '''if self.isEvaluate:
             # 初始化动态绘图
             plt.ion()  # 开启交互模式
             self.fig, self.ax = plt.subplots(1, 1, figsize=(14, 10))
@@ -1584,7 +1585,7 @@ class AlphaZeroTrainer:
             self.line3, = self.ax.plot([], [], 'b-', label='Draw count')
             self.ax.legend()
             if len(self.win_history) > 0:
-                self.update_plot()
+                self.update_plot()'''
 
         # 启动键盘监听线程
         listener = threading.Thread(target=self._esc_listener, args=(bExit, bStopProcess,))
@@ -1600,10 +1601,10 @@ class AlphaZeroTrainer:
         if bExit.value == False and listener is not None and listener.is_alive():
             listener.join() # 等待监听线程结束
 
-        if self.isEvaluate:
+        '''if self.isEvaluate:
             plt.ioff()  # 关闭交互模式
             #plt.show()
-            plt.close()
+            plt.close()'''
     
     def _esc_listener(self, bExit, bStopProcess):
         """ 监听 ESC 按键，通知所有进程退出 """
@@ -1627,11 +1628,12 @@ class AlphaZeroTrainer:
     def save_evaluate_history_to_csv(self, file_name='evaluate_history.csv'):
         with open(file_name, 'w', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(['Win', 'Lose', 'Draw'])
-            for win, lose, draw in zip(self.win_history, self.lose_history, self.draw_history):
-                writer.writerow([win, lose, draw])
+            writer.writerow(['GameNo', 'Win', 'Lose', 'Draw'])
+            for gameNo, win, lose, draw in zip(self.gameNo_history, self.win_history, self.lose_history, self.draw_history):
+                writer.writerow([gameNo, win, lose, draw])
     
     def load_evaluate_history_from_csv(self, file_name='evaluate_history.csv'):
+        self.gameNo_history = []
         self.win_history = []
         self.lose_history = []
         self.draw_history = []
@@ -1640,9 +1642,10 @@ class AlphaZeroTrainer:
                 reader = csv.reader(file)
                 next(reader)  # 跳过标题行
                 for row in reader:  # 读取每一行数据
-                    self.win_history.append(int(row[0]))
-                    self.lose_history.append(int(row[1]))
-                    self.draw_history.append(int(row[2]))
+                    self.gameNo_history.append(int(row[0]))
+                    self.win_history.append(int(row[1]))
+                    self.lose_history.append(int(row[2]))
+                    self.draw_history.append(int(row[3]))
 
     def save_cache(self, cache_file):
         try:
@@ -1742,4 +1745,4 @@ if __name__ == "__main__":
     '''trainer.load_cache_list(['cache_125.pkl', 'cache_195.pkl', 'cache_330.pkl', 'cache_360.pkl'
                              , 'cache_375.pkl', 'cache_380.pkl', 'cache_435.pkl', 'cache_465.pkl', 'cache_500.pkl', 'cache_550.pkl'])'''
     trainer.load_cache()
-    trainer.run(starting_game_Num=5604)
+    trainer.run(starting_game_Num=0)
