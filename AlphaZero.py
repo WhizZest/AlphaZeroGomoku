@@ -1550,7 +1550,7 @@ class AlphaZeroTrainer:
             self.save_checkpoint(shared_game_counter.value, best=True)
             print(f"Best model updated at game No. {shared_game_counter.value}")
         print(f"Game No. {shared_game_counter.value}, win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
-        self.update_plot()
+        #self.update_plot()
         if self.isEvaluate:
             #plt.savefig(os.path.join(script_dir, f"az_plot_checkpoint.png"))
             self.save_evaluate_history_to_csv()
