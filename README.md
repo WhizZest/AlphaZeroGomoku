@@ -24,5 +24,5 @@ AlphaZeroGomoku
    ```
 5. 安装其他依赖：
    ```
-   conda install matplotlib keyboard scipy joblib -y
+   conda install matplotlib keyboard scipy joblib opencv pyautogui -y
    ```
