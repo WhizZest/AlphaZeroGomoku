@@ -11,6 +11,7 @@ import threading
 import time
 import queue
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import sys
 import pickle
 import configparser
@@ -35,13 +36,13 @@ Max_step = BOARD_SIZE * BOARD_SIZE
 # 主进程（训练）参数
 batch_size = 1024  # 每次训练的批量大小
 train_frequency = 512  # 每隔多少步进行一次训练
-num_games_process = 5  # 并行训练进程数
+num_games_process = 5  # 并行自我对弈进程数
 num_games_new_vs_old = 0 # 新旧模型并行对战的游戏进程数量
 isEvaluate = True # 是否进行评估，评估比较耗时，如果是15x15的棋盘，建议关闭评估
 evaluate_games_num = 10  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
 learning_rate = 0.001  # 学习率
-buffer_size = 500000  # 经验回放缓冲区大小
+buffer_size = 300000  # 经验回放缓冲区大小
 Max_game_num = 20000 # 游戏总局数
 
 # 子进程（环境采样）参数
@@ -411,7 +412,7 @@ class MCTS_Pure:
                 for move in np.argwhere(valid_moves):
                     child = MCTSNode(None, -env_copy.current_player, parent=node)
                     child.prior = policy[move[0], move[1]]
-                    child.action = (move[0], move[1])
+                    child.action = (int(move[0]), int(move[1]))
                     node.children.append(child)
                 
                 value = 0
@@ -464,7 +465,8 @@ def softmax(x):
 
 class MCTS:
     def __init__(self, model):
-        self.model = model
+        self.model = type(model)().to(mcts_device) # 创建与传入模型相同结构的新模型
+        self.model.load_state_dict(model.state_dict()) # 复制参数
         self.c_puct = c_puct  # 探索系数
         self.temperature = temperature  # 添加温度参数
         self.dirichlet_alpha = dirichlet_alpha  # Dirichlet分布参数α
@@ -593,7 +595,7 @@ class MCTS:
                 for move in np.argwhere(valid_moves):
                     child = MCTSNode(None, -env_copy.current_player, parent=node)
                     child.prior = policy[move[0]*BOARD_SIZE + move[1]]
-                    child.action = (move[0], move[1])
+                    child.action = (int(move[0]), int(move[1]))
                     node.children.append(child)
             else:
                 if env_copy.done:
@@ -1078,7 +1080,7 @@ def play_single_game_with_best(global_model, bExit, result_queue, best_model, cu
         print(f"New Model win, processID: {os.getpid()}, steps: {steps}, winner: {winner}, first action: {env.action_history[0]}")
     print(f"Game over, processID: {os.getpid()}, steps: {steps}, winner: {winner}, action_history: {env.action_history}")
     result_queue.put(1 if winner == current_model_player else 0 if winner == 0 else -1)
-    if value_pred_min < -0.7:
+    if (value_pred_min < -0.7 and current_model_player == -1) or (value_pred_min < -0.3 and current_model_player == 1):
         save_buffer_flag = True
         if steps_TakeBack < 0:
             env.action_history = env.action_history[:value_pred_min_step]
@@ -1133,7 +1135,7 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
                 return 0
 
             if env.current_player == current_model_player:
-                action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
+                action, _, value_pred, result = mcts.search(env, training=False if len(env.action_history) > 0 else True, simulations=MCTS_simulations)
                 if value_pred < value_pred_min and value_pred_min > -1:
                     value_pred_min = value_pred
                     value_pred_min_step = len(env.action_history)
@@ -1141,14 +1143,15 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
                 '''valid_moves = np.argwhere(env.get_valid_moves())
                 action = tuple(valid_moves[np.random.choice(len(valid_moves))])'''
                 if best_model is not None:
-                    action, _, value_pred, result = mcts_best.search(env, training=False, simulations=MCTS_simulations)
+                    action, _, value_pred, result = mcts_best.search(env, training=False if len(env.action_history) > 0 else True, simulations=MCTS_simulations)
                 else:
                     action, value_pred, result = mcts_pure.search(env, simulations=MCTS_simulations)
 
             env.step(action)
 
+    print(f"Game over, processID: {os.getpid()}, steps: {len(env.action_history)}, winner: {env.winner}, action_history: {env.action_history}")
     result_queue.put(1 if env.winner == current_model_player else 0 if env.winner == 0 else -1)
-    if value_pred_min < -0.7:
+    if (value_pred_min < -0.7 and current_model_player == -1) or (value_pred_min < -0.3 and current_model_player == 1):
         save_buffer_flag = True
         if steps_TakeBack < 0:
             env.action_history = env.action_history[:value_pred_min_step]
@@ -1651,6 +1654,8 @@ class AlphaZeroTrainer:
         try:
             with open(cache_file, 'wb') as file:
                 pickle.dump(self.buffer, file)
+                file.flush()
+                os.fsync(file.fileno())  # 强制刷新至磁盘
             print("缓存已保存到硬盘")
         except Exception as e:
             print(f"保存缓存时发生错误: {e}")
@@ -1713,6 +1718,7 @@ class AlphaZeroTrainer:
                     with open(file_path, 'rb') as file:
                         eval_gamedatas.extend(pickle.load(file))
                     file_name_list.append(file_name)
+                    print(f"加载评估缓存文件 {file_name}")
             if len(eval_gamedatas) > 0:
                 print("评估缓存已从硬盘加载, buffer size:", len(eval_gamedatas))
             # 将file_name_list中的文件转移到eval_buffer_old文件夹中
