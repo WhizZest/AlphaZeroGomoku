@@ -8,11 +8,11 @@ AlphaZeroGomoku
 # 环境安装步骤：
 1. 创建conda环境：
    ```
-   conda create -n py312_torch python=3.12
+   conda create -n az_gomoku python=3.12
    ```
 2. 激活conda环境：
    ```
-   conda activate py312_torch
+   conda activate az_gomoku
    ```
 3. 检查NVIDIA CUDA版本：
    ```
