@@ -13,20 +13,22 @@ import queue
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import sys
-import pickle
+import joblib
 import configparser
 import shutil
 from scipy.stats import multivariate_normal
 import torch.nn.functional as F
 import csv
 from enum import Enum
+import gc
 
 # 配置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 mcts_device = "cpu"
 config_file='config.ini'
 script_dir = os.path.dirname(os.path.abspath(__file__))
-config_file_absolute = os.path.join(script_dir, config_file)
+save_path = os.path.join(script_dir, "model")
+config_file_absolute = os.path.join(save_path, config_file)
 
 # 游戏环境配置
 BOARD_SIZE = 15  # 使用BOARD_SIZExBOARD_SIZE棋盘加速训练
@@ -42,7 +44,7 @@ isEvaluate = True # 是否进行评估，评估比较耗时，如果是15x15的�
 evaluate_games_num = 10  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
 learning_rate = 0.001  # 学习率
-buffer_size = 300000  # 经验回放缓冲区大小
+buffer_size = 100000  # 经验回放缓冲区大小
 Max_game_num = 20000 # 游戏总局数
 
 # 子进程（环境采样）参数
@@ -58,7 +60,7 @@ dirichlet_alpha = 0.3 # 控制噪声集中程度（值越小噪声越稀疏）�
 dirichlet_epsilon=0.25  # 原策略与噪声的混合比例（多进程参数）
 c_puct = 5 # 控制探索与利用的平衡（多进程参数）
 stop_training = False # 是否停止训练，比Esc更缓慢的退出，允许一局游戏正常结束，Esc会立即中断游戏
-epsilon_first = 0.0 # 第一步的探索概率（多进程参数）
+epsilon_first = 0.4 # 第一步的探索概率（多进程参数）
 
 class GomokuEnv:
     def __init__(self):
@@ -146,8 +148,23 @@ class TaskType(Enum):
     EVALUATE_GAME_DATA = "evaluate_game_data"
     NEW_MODEL_VS_OLD_MODEL = "new_model_vs_old_model"
 
+class SimAM(nn.Module):
+    def __init__(self, lambd=1e-4):
+        super(SimAM, self).__init__()
+        self.lambd = lambd
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+        n = h * w - 1
+        mean = x.mean(dim=(2, 3), keepdim=True)
+        d = (x - mean).pow(2)
+        var = d.sum(dim=(2, 3), keepdim=True) / n
+        energy = d / (4 * (var + self.lambd)) + 0.5
+        attention = torch.sigmoid(energy)
+        return x * attention
+    
 class ResidualBlock(nn.Module):
-    """带SE注意力的残差块"""
+    """带注意力的残差块"""
     def __init__(self, channels):
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
@@ -155,11 +172,13 @@ class ResidualBlock(nn.Module):
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(channels)
         #self.se = SEBlock(channels)  # 添加SE注意力
+        self.simam = SimAM()  # 加入SimAM模块
         
     def forward(self, x):
         residual = x
         x = F.relu(self.bn1(self.conv1(x)))  # 使用relu激活函数
         x = self.bn2(self.conv2(x))
+        x = self.simam(x)  # 在残差连接前应用SimAM
         x += residual
         #x = self.se(x)  # 应用SE注意力
         return F.relu(x)
@@ -772,6 +791,9 @@ def augment_data(state, policy):
 def play_single_eval_gamedata(global_model, bExit, eval_game_data, result_queue):
     """ 运行评估产生的游戏数据 """
     read_param_from_config_to_process() # 从配置文件读取参数
+    global MCTS_parant_root_reserve_nums
+    # 仅保留MCTS_parant_root_reserve_nums中的最大值
+    MCTS_parant_root_reserve_nums = [max(MCTS_parant_root_reserve_nums)] # 复盘时只使用最大值
     eval_game_actions = eval_game_data[0]
     temperature_decay = (temperature - temperature_end) / (Max_step - temperature_decay_start)  # 计算温度衰减率
     game_data = []
@@ -1002,10 +1024,17 @@ def play_single_game(global_model, bExit, result_queue, shared_counter, pause_ev
 
 def self_play_worker(global_model, bExit, result_queue, shared_counter, task_queue, pause_event, barrier):
     """ 自我对弈工作进程：循环运行自我对弈 """
+    gc_count = 0
     while not bExit.value:
         play_single_game(global_model, bExit, result_queue, shared_counter, pause_event, barrier)
+        gc_count += 1
+        if gc_count >= 5:  # 每5局自我对弈进行一次垃圾回收
+            gc.collect()
+            gc_count = 0
+            print(f"Self-play worker {mp.current_process().pid} performed garbage collection.")
         if bExit.value:
             break
+        read_param_from_config_to_process() # 读取配置文件到子进程
         with shared_counter.get_lock():
             shared_counter.value += 1
             if shared_counter.value > 0 and shared_counter.value % 25 == 0: # 每25局自我对弈保存一次模型，不需要暂停子进程
@@ -1015,12 +1044,11 @@ def self_play_worker(global_model, bExit, result_queue, shared_counter, task_que
                 task_queue.put(TaskType.EVALUATE)  # 添加评估任务到队列
                 pause_event.set()
                 print(f"Self-play worker {mp.current_process().pid} trigger evaluation.")
-        
         if pause_event.is_set(): # 如果收到暂停信号，则等待
             print(f"Self-play worker {mp.current_process().pid} paused, waiting for resume...")
             barrier.wait()
             print(f"Self-play worker {mp.current_process().pid} resumed.")
-        read_param_from_config_to_process() # 读取配置文件到子进程
+        
         if shared_counter.value > Max_game_num:
             with bExit.get_lock():
                 bExit.value = True
@@ -1028,6 +1056,7 @@ def self_play_worker(global_model, bExit, result_queue, shared_counter, task_que
         if stop_training:
             print(f"Self-play worker {mp.current_process().pid} received stop_training signal, exiting...")
             break
+    gc.collect()
 
 def play_single_game_with_best(global_model, bExit, result_queue, best_model, current_model_player=None):
     """ 知识蒸馏：旧模型与新模型对战 """
@@ -1092,17 +1121,16 @@ def play_single_game_with_best(global_model, bExit, result_queue, best_model, cu
 def save_buffer(buffer):
     """ 保存缓冲区数据 """
     if len(buffer) > 0:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
         from datetime import datetime
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
-        filename = f"buffer_{timestamp}_{os.getpid()}.pkl"
-        filepath = os.path.join(script_dir, "eval_buffer", filename)
-        folder = os.path.join(script_dir, "eval_buffer")
+        filename = f"buffer_{timestamp}_{os.getpid()}.joblib"
+        filepath = os.path.join(save_path, "eval_buffer", filename)
+        folder = os.path.join(save_path, "eval_buffer")
         if not os.path.exists(folder):
             os.makedirs(folder)
         with open(filepath, "wb") as f:
-            pickle.dump(buffer, f)
+            joblib.dump(buffer, f)
         print(f"缓冲区数据已保存至 {filepath}，共 {len(buffer)} 条数据。")
 
 def evaluate_single_game(global_model, bExit, result_queue, best_model=None, current_model_player=None):
@@ -1162,10 +1190,9 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
 
 # 训练流程
 class AlphaZeroTrainer:
-    def __init__(self, modelFileName=None, cache_file='cache.pkl', isEvaluate=False, bestModelFileName=None, oldBestModelFileName=None):
-        self.save_path = os.path.join(script_dir, "model")
+    def __init__(self, modelFileName=None, cache_file='cache.joblib', isEvaluate=False, bestModelFileName=None, oldBestModelFileName=None):
         self.isEvaluate = isEvaluate
-        os.makedirs(self.save_path, exist_ok=True)
+        os.makedirs(save_path, exist_ok=True)
         self.model = AlphaZeroNet().to(device)  # 初始化时转移到设备
         if modelFileName is not None:
             filePath = os.path.join(script_dir, modelFileName)
@@ -1199,8 +1226,7 @@ class AlphaZeroTrainer:
                 print("加载最佳模型成功")
         self.buffer = deque(maxlen=buffer_size)
         self.batch_data_count = 0
-        self.cache_file = os.path.join(script_dir, cache_file)
-        self.cache_file_temp = os.path.join(script_dir, 'cache_temp.pkl')
+        self.cache_file = os.path.join(save_path, cache_file)
         self.load_evaluate_history_from_csv() # 加载评估历史数据
         self._write_param_to_config()
     
@@ -1378,6 +1404,7 @@ class AlphaZeroTrainer:
                     if task == TaskType.EVALUATE:
                         self.evaluate(shared_game_counter=shared_counter, bExit=bExit, num_games=evaluate_games_num)
                         self.self_play_eval_gamedata(num_games=num_games_process, bExit=bExit)
+                        gc.collect()
                     elif task == TaskType.SAVE_CHECKPOINT:
                         self.save_checkpoint(shared_counter.value)
                     elif task == TaskType.EVALUATE_GAME_DATA:
@@ -1398,6 +1425,7 @@ class AlphaZeroTrainer:
                 task = task_queue.get()
                 if task == TaskType.SAVE_CHECKPOINT:
                     self.save_checkpoint(shared_counter.value)
+                    gc.collect()
                 else:
                     task_queue.put(task) # 将任务放回队列
                     print(f"Task queue is not empty, but pause_event is not set. Task: {task}")
@@ -1538,19 +1566,28 @@ class AlphaZeroTrainer:
         self.win_history.append(win_count)
         self.lose_history.append(lose_count)
         self.draw_history.append(draw_count)
+        best = False
         if self.best_model is None:
             if win_count == num_games:
                 self.best_model = AlphaZeroNet().to(mcts_device)
                 self.best_model.load_state_dict(self.model.state_dict())
                 self.best_model.share_memory()
                 self.best_model.eval()
-                self.save_checkpoint(shared_game_counter.value, best=True)
-                print(f"Best model updated at game No. {shared_game_counter.value}")
+                best = True
         elif self.best_model is not None and win_count > lose_count:
             self.best_model.load_state_dict(self.model.state_dict())
             self.best_model.share_memory()
             self.best_model.eval()
-            self.save_checkpoint(shared_game_counter.value, best=True)
+            best = True
+        if best:
+            oldfilePath = os.path.join(save_path, f"az_model_{shared_game_counter.value}.pth")
+            newfilePath = os.path.join(save_path, f"az_model_{shared_game_counter.value}_best.pth")
+            if os.path.exists(oldfilePath):
+                # 如果存在旧模型文件，则重命名为最佳模型文件
+                os.rename(oldfilePath, newfilePath)
+            else:
+                # 如果不存在旧模型文件，则直接保存为最佳模型文件
+                torch.save(self.best_model.state_dict(), newfilePath)
             print(f"Best model updated at game No. {shared_game_counter.value}")
         print(f"Game No. {shared_game_counter.value}, win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
         #self.update_plot()
@@ -1598,8 +1635,8 @@ class AlphaZeroTrainer:
         
         bStopProcess.value = True  # 停止监听进程
         if self.best_model is not None:
-            torch.save(self.best_model.state_dict(), os.path.join(self.save_path, "az_model_best.pth"))
-        torch.save(self.model.state_dict(), os.path.join(self.save_path, "az_model_final.pth"))
+            torch.save(self.best_model.state_dict(), os.path.join(save_path, "az_model_best.pth"))
+        torch.save(self.model.state_dict(), os.path.join(save_path, "az_model_final.pth"))
         self.save_cache(self.cache_file)
         if bExit.value == False and listener is not None and listener.is_alive():
             listener.join() # 等待监听线程结束
@@ -1608,6 +1645,7 @@ class AlphaZeroTrainer:
             plt.ioff()  # 关闭交互模式
             #plt.show()
             plt.close()'''
+        del self.buffer # 清理缓存
     
     def _esc_listener(self, bExit, bStopProcess):
         """ 监听 ESC 按键，通知所有进程退出 """
@@ -1623,13 +1661,14 @@ class AlphaZeroTrainer:
             time.sleep(0.1)  # 避免 CPU 过载
     
     def save_checkpoint(self, i, best=False):
-        os.makedirs(self.save_path, exist_ok=True)
-        filePath = os.path.join(self.save_path, f"az_model_{i}_best.pth") if best else os.path.join(self.save_path, f"az_model_{i}.pth")
+        os.makedirs(save_path, exist_ok=True)
+        filePath = os.path.join(save_path, f"az_model_{i}_best.pth") if best else os.path.join(save_path, f"az_model_{i}.pth")
         torch.save(self.model.state_dict(), filePath)
-        self.save_cache(self.cache_file_temp)
+        # 保存缓存到临时文件，文件名格式为 cache_i_buffer长度.joblib
+        self.save_cache_async(os.path.join(save_path, f"cache_{i}_{len(self.buffer)}.joblib"))
 
     def save_evaluate_history_to_csv(self, file_name='evaluate_history.csv'):
-        with open(file_name, 'w', newline='') as file:
+        with open(os.path.join(save_path, file_name), 'w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(['GameNo', 'Win', 'Lose', 'Draw'])
             for gameNo, win, lose, draw in zip(self.gameNo_history, self.win_history, self.lose_history, self.draw_history):
@@ -1640,6 +1679,8 @@ class AlphaZeroTrainer:
         self.win_history = []
         self.lose_history = []
         self.draw_history = []
+        # 完整文件名
+        file_name = os.path.join(save_path, file_name)
         if os.path.exists(file_name):
             with open(file_name, 'r', newline='') as file:
                 reader = csv.reader(file)
@@ -1650,20 +1691,34 @@ class AlphaZeroTrainer:
                     self.lose_history.append(int(row[2]))
                     self.draw_history.append(int(row[3]))
 
-    def save_cache(self, cache_file):
+    def save_cache(self, cache_file, copy_buffer=False):
         try:
+            t = time.time()
             with open(cache_file, 'wb') as file:
-                pickle.dump(self.buffer, file)
+                if copy_buffer:
+                    buffer_temp = self.buffer.copy()
+                else:
+                    buffer_temp = self.buffer
+                joblib.dump(buffer_temp, file, compress=3)
                 file.flush()
                 os.fsync(file.fileno())  # 强制刷新至磁盘
-            print("缓存已保存到硬盘")
+                t = time.time() - t
+                print(f"缓存已保存到 {cache_file}， buffer size: {len(buffer_temp)}, time: {t:.2f}s")
+                if copy_buffer:
+                    del buffer_temp  # 清理临时变量
         except Exception as e:
             print(f"保存缓存时发生错误: {e}")
+
+    def save_cache_async(self, cache_file):
+        # 异步保存缓存
+        thread = threading.Thread(target=self.save_cache, args=(cache_file, True), name=f"SaveCacheThread-{cache_file}")
+        thread.start()
+        return thread
 
     def load_cache(self):
         try:
             with open(self.cache_file, 'rb') as file:
-                buffer_temp = pickle.load(file)
+                buffer_temp = joblib.load(file)
             if len(buffer_temp) > buffer_size:
                 # 取最新的buffer_size个数据
                 buffer_temp = list(buffer_temp)[-buffer_size:]
@@ -1682,7 +1737,7 @@ class AlphaZeroTrainer:
             try:
                 cache_file = os.path.join(script_dir, cache_file)
                 with open(cache_file, 'rb') as file:
-                    buffer_temp.extend(pickle.load(file))
+                    buffer_temp.extend(joblib.load(file))
                 print(f"缓存文件 {cache_file} 已加载")
             except Exception as e:
                 if isinstance(e, FileNotFoundError):
@@ -1695,9 +1750,9 @@ class AlphaZeroTrainer:
     
     def is_eval_cache_empty(self):
         # 检查self.script_dir路径下eval_buffer文件夹是否为空
-        eval_buffer_dir = os.path.join(script_dir, "eval_buffer")
+        eval_buffer_dir = os.path.join(save_path, "eval_buffer")
         if os.path.exists(eval_buffer_dir):
-            pkl_files = [f for f in os.listdir(eval_buffer_dir) if f.endswith('.pkl')]
+            pkl_files = [f for f in os.listdir(eval_buffer_dir) if f.endswith('.joblib')]
             if len(pkl_files) == 0: # 如果文件夹为空
                 return True
             else:
@@ -1710,19 +1765,19 @@ class AlphaZeroTrainer:
         # 加载self.script_dir路径下eval_buffer文件夹中的所有pkl文件，每个文件都是一个包含若干评估数据的列表，把这些列表合并为一个列表eval_gamedatas
         eval_gamedatas = []
         file_name_list = []
-        eval_buffer_dir = os.path.join(script_dir, "eval_buffer")
+        eval_buffer_dir = os.path.join(save_path, "eval_buffer")
         if os.path.exists(eval_buffer_dir):
             for file_name in os.listdir(eval_buffer_dir):
-                if file_name.endswith(".pkl"):
+                if file_name.endswith(".joblib"):
                     file_path = os.path.join(eval_buffer_dir, file_name)
                     with open(file_path, 'rb') as file:
-                        eval_gamedatas.extend(pickle.load(file))
+                        eval_gamedatas.extend(joblib.load(file))
                     file_name_list.append(file_name)
                     print(f"加载评估缓存文件 {file_name}")
             if len(eval_gamedatas) > 0:
                 print("评估缓存已从硬盘加载, buffer size:", len(eval_gamedatas))
             # 将file_name_list中的文件转移到eval_buffer_old文件夹中
-            eval_buffer_old_dir = os.path.join(script_dir, "eval_buffer_old")
+            eval_buffer_old_dir = os.path.join(save_path, "eval_buffer_old")
             if not os.path.exists(eval_buffer_old_dir):
                 os.makedirs(eval_buffer_old_dir)
             for file_name in file_name_list:
