@@ -2,12 +2,13 @@ import cv2
 import numpy as np
 import pyautogui
 import time
-from AlphaZero import GomokuEnv, MCTS_Pure, MCTS, AlphaZeroNet, BOARD_SIZE, device, mcts_device
+from AlphaZero import GomokuEnv, MCTS_Pure, MCTS, AlphaZeroNet, BOARD_SIZE, device, mcts_device, save_path
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import torch
 import matplotlib.pyplot as plt
 from datetime import datetime
-import pickle
+import joblib
 
 def select_region():
     """ 让用户手动框选棋盘区域 """
@@ -104,6 +105,9 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
     screen = capture_board(region=None)  # 截取全屏图像
     board_matrix_current = detect_pieces(screen.copy(), actionMapToCoords, show_result=False, timeout=0)
     if env.current_player == current_model_player and not np.array_equal(env.board, board_matrix_current):
+        cv2.imshow("Detected Pieces", screen)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
         raise ValueError("当前玩家为先手，但当前棋盘不为空，请检查先后手是否正确")
 
     while not env.done:
@@ -114,7 +118,7 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
             value_pred_list.append(np.clip(value_pred, -1, 1))
             if value_pred < value_pred_min and value_pred_min > -1:
                 value_pred_min = value_pred
-                value_pred_min_step = len(env.action_history)
+                value_pred_min_step = len(env.action_history) + 1
             x, y = actionMapToCoords[action]
             pyautogui.moveTo(x, y)
             pyautogui.click()
@@ -141,11 +145,11 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
         if reward is None:
             print(f"当前玩家：{env.current_player}，无效动作 {action}")
             return None
-    if value_pred_min < -0.7:
+    if (value_pred_min < -0.7 and current_model_player == -1) or (value_pred_min < -0.3 and current_model_player == 1):
         save_buffer_flag = True
         if steps_TakeBack < 0:
             env.action_history = env.action_history[:value_pred_min_step]
-            print(f"预测胜率最低为{value_pred_min}，回退到第{value_pred_min_step+1}步")
+            print(f"预测胜率最低为{value_pred_min}，回退到第{value_pred_min_step}步")
     if len(env.action_history) > 0 and save_buffer_flag:
         buffer.append((env.action_history, steps_TakeBack))
     # 绘制value_pred_list图像
@@ -173,27 +177,28 @@ def save_buffer(buffer):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
-        filename = f"buffer_{timestamp}.pkl"
-        filepath = os.path.join(script_dir, "eval_buffer", filename)
-        folder = os.path.join(script_dir, "eval_buffer")
+        filename = f"buffer_{timestamp}.joblib"
+        filepath = os.path.join(save_path, "eval_buffer", filename)
+        folder = os.path.join(save_path, "eval_buffer")
         if not os.path.exists(folder):
             os.makedirs(folder)
         with open(filepath, "wb") as f:
-            pickle.dump(buffer, f)
+            joblib.dump(buffer, f)
         print(f"缓冲区数据已保存至 {filepath}，共 {len(buffer)} 条数据。")
 
 if __name__ == "__main__":
     screen = capture_board(region=None)  # 截取全屏图像
     # 设置棋盘左上角和右下角的坐标，以及棋盘大小
     actionMapToCoords = detect_grid_intersections(screen.copy(), top_left=(723, 162), bottom_right=(1884,1326), board_size=BOARD_SIZE, show_result=True, timeout=0)
+    time.sleep(0.5)
     if actionMapToCoords is not None:
         # 获取本地文件夹路径，与"model"文件夹拼接,得到模型文件路径,与当前模型文件名拼接，得到完整模型文件路径
         local_folder = os.path.dirname(os.path.abspath(__file__))
-        model_file_path = os.path.join(local_folder, "model", "az_model_best.pth")
+        model_file_path = os.path.join(local_folder, "model", "az_model_final.pth")
         ai_play = AlphaZeroNet().to(mcts_device)
         ai_play.load_state_dict(torch.load(model_file_path, map_location=mcts_device, weights_only=True))
         ai_play.eval()
-        current_model_player = 1  # 当前模型玩家, 1表示黑子，-1表示白子
+        current_model_player = -1  # 当前模型玩家, 1表示黑子，-1表示白子
         MCTS_simulations = 800  # MCTS模拟次数
         result, buffer = evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_simulations)
         save_buffer(buffer)

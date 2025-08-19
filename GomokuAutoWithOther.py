@@ -2,8 +2,9 @@ import cv2
 import numpy as np
 import pyautogui
 import time
-from AlphaZero import GomokuEnv, MCTS_Pure, MCTS, AlphaZeroNet, BOARD_SIZE, device, mcts_device
+from AlphaZero import GomokuEnv, MCTS_Pure, MCTS, AlphaZeroNet, BOARD_SIZE, device, mcts_device, save_path
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import torch
 import matplotlib.pyplot as plt
 import threading
@@ -13,7 +14,7 @@ import matplotlib
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
-import pickle
+import joblib
 
 class GomokuAutoWithOtherGUI:
     def __init__(self, master):
@@ -45,13 +46,13 @@ class GomokuAutoWithOtherGUI:
         if len(self.buffer) > 0:
             now = datetime.now()
             timestamp = now.strftime("%Y%m%d_%H%M%S")
-            filename = f"buffer_{timestamp}.pkl"
-            filepath = os.path.join(self.script_dir, "eval_buffer", filename)
-            folder = os.path.join(self.script_dir, "eval_buffer")
+            filename = f"buffer_{timestamp}.joblib"
+            filepath = os.path.join(save_path, "eval_buffer", filename)
+            folder = os.path.join(save_path, "eval_buffer")
             if not os.path.exists(folder):
                 os.makedirs(folder)
             with open(filepath, "wb") as f:
-                pickle.dump(self.buffer, f)
+                joblib.dump(self.buffer, f)
             print(f"缓冲区数据已保存至 {filepath}，共 {len(self.buffer)} 条数据。")
 
     def on_closing(self):
@@ -212,7 +213,7 @@ class GomokuAutoWithOtherGUI:
                 self.value_history.append(np.clip(value_pred, -1, 1)) # 记录胜率
                 if value_pred < value_pred_min and value_pred_min > -1:
                     value_pred_min = value_pred
-                    value_pred_min_step = len(env.action_history)
+                    value_pred_min_step = len(env.action_history) + 1
                 x, y = actionMapToCoords[action]
                 pyautogui.moveTo(x, y)
                 pyautogui.click()
@@ -256,7 +257,7 @@ class GomokuAutoWithOtherGUI:
                 if result is not None:
                     env.winner = current_model_player if result == 1 else -current_model_player if result == -1 else 0
                 break
-        if value_pred_min < -0.7:
+        if (value_pred_min < -0.7 and current_model_player == -1) or (value_pred_min < -0.3 and current_model_player == 1):
             save_buffer_flag = True
             if steps_TakeBack < 0:
                 env.action_history = env.action_history[:value_pred_min_step]
