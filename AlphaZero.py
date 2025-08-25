@@ -36,13 +36,13 @@ WIN_STREAK = 5
 Max_step = BOARD_SIZE * BOARD_SIZE
 
 # 主进程（训练）参数
-batch_size = 1024  # 每次训练的批量大小
+batch_size = 2048  # 每次训练的批量大小
 train_frequency = 512  # 每隔多少步进行一次训练
 num_games_process = 5  # 并行自我对弈进程数
 num_games_new_vs_old = 0 # 新旧模型并行对战的游戏进程数量
 isEvaluate = True # 是否进行评估，评估比较耗时，如果是15x15的棋盘，建议关闭评估
 evaluate_games_num = 10  # 每次评估的游戏数量
-num_epochs = 10  # 训练的轮数
+num_epochs = 5  # 训练的轮数
 learning_rate = 0.001  # 学习率
 buffer_size = 100000  # 经验回放缓冲区大小
 Max_game_num = 20000 # 游戏总局数
@@ -1087,7 +1087,7 @@ def play_single_game_with_best(global_model, bExit, result_queue, best_model, cu
                 steps_TakeBack = len(env.action_history) - 2'''
             if value_pred < value_pred_min and value_pred_min > -1:
                 value_pred_min = value_pred
-                value_pred_min_step = len(env.action_history)
+                value_pred_min_step = len(env.action_history) + 1
         else:
             epsilon_first = 0.8
             action, action_probs, value_pred, result = mcts_best.search(env, training=False if len(env.action_history) > 0 else True, simulations=MCTS_simulations if len(env.action_history) < 1 else 1200 if env.current_player == 1 else 1500)
@@ -1113,7 +1113,7 @@ def play_single_game_with_best(global_model, bExit, result_queue, best_model, cu
         save_buffer_flag = True
         if steps_TakeBack < 0:
             env.action_history = env.action_history[:value_pred_min_step]
-            print(f"预测胜率最低为{value_pred_min}，回退到第{value_pred_min_step+1}步")
+            print(f"预测胜率最低为{value_pred_min}，回退到第{value_pred_min_step}步")
     if len(env.action_history) > 0 and save_buffer_flag:
         buffer.append((env.action_history, steps_TakeBack))
         save_buffer(buffer)
@@ -1166,7 +1166,7 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
                 action, _, value_pred, result = mcts.search(env, training=False if len(env.action_history) > 0 else True, simulations=MCTS_simulations)
                 if value_pred < value_pred_min and value_pred_min > -1:
                     value_pred_min = value_pred
-                    value_pred_min_step = len(env.action_history)
+                    value_pred_min_step = len(env.action_history) + 1
             else:
                 '''valid_moves = np.argwhere(env.get_valid_moves())
                 action = tuple(valid_moves[np.random.choice(len(valid_moves))])'''
@@ -1183,7 +1183,7 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
         save_buffer_flag = True
         if steps_TakeBack < 0:
             env.action_history = env.action_history[:value_pred_min_step]
-            print(f"预测胜率最低为{value_pred_min}，回退到第{value_pred_min_step+1}步")
+            print(f"预测胜率最低为{value_pred_min}，回退到第{value_pred_min_step}步")
     if len(env.action_history) > 0 and save_buffer_flag:
         buffer.append((env.action_history, steps_TakeBack))
         save_buffer(buffer)
@@ -1228,11 +1228,13 @@ class AlphaZeroTrainer:
         self.batch_data_count = 0
         self.cache_file = os.path.join(save_path, cache_file)
         self.load_evaluate_history_from_csv() # 加载评估历史数据
+        self.load_cache()
         self._write_param_to_config()
     
     def _write_param_to_config(self):
         config = configparser.ConfigParser()
         config['TRAINING'] = {'learning_rate': str(learning_rate)}
+        config['TRAINING']['buffer_size'] = str(buffer_size)
         config['TRAINING']['batch_size'] = str(batch_size)
         config['TRAINING']['num_epochs'] = str(num_epochs)
         config['TRAINING']['train_frequency'] = str(train_frequency)
@@ -1260,6 +1262,7 @@ class AlphaZeroTrainer:
             config.write(configfile)
     
     def _read_param_from_config(self):
+        global buffer_size
         global batch_size
         global num_epochs
         global train_frequency
@@ -1273,6 +1276,11 @@ class AlphaZeroTrainer:
         lr = float(config['TRAINING']['learning_rate'])
         for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lr
+        buffer_size_temp = int(config['TRAINING']['buffer_size'])
+        if buffer_size_temp != buffer_size:
+            buffer_size = buffer_size_temp
+            self.buffer = deque(self.buffer, maxlen=buffer_size)
+            print(f"Buffer size updated to {buffer_size}")
         batch_size = int(config['TRAINING']['batch_size'])
         num_epochs = int(config['TRAINING']['num_epochs'])
         train_frequency = int(config['TRAINING']['train_frequency'])
@@ -1718,12 +1726,10 @@ class AlphaZeroTrainer:
     def load_cache(self):
         try:
             with open(self.cache_file, 'rb') as file:
-                buffer_temp = joblib.load(file)
-            if len(buffer_temp) > buffer_size:
-                # 取最新的buffer_size个数据
-                buffer_temp = list(buffer_temp)[-buffer_size:]
-            self.buffer = deque(buffer_temp, maxlen=buffer_size)
-            print("缓存已从硬盘加载, buffer size:", len(self.buffer))
+                self.buffer = joblib.load(file)
+            global buffer_size
+            buffer_size = self.buffer.maxlen
+            print(f"缓存已从硬盘加载, buffer size: {len(self.buffer)}, maxlen: {buffer_size}")
         except Exception as e:
             if isinstance(e, FileNotFoundError):
                 print("未找到缓存文件，将创建新的缓存")
@@ -1805,5 +1811,5 @@ if __name__ == "__main__":
     trainer = AlphaZeroTrainer(modelFileName="model/az_model_final.pth", isEvaluate=isEvaluate, bestModelFileName="model/az_model_best.pth", oldBestModelFileName="az_model_550old.pth")
     '''trainer.load_cache_list(['cache_125.pkl', 'cache_195.pkl', 'cache_330.pkl', 'cache_360.pkl'
                              , 'cache_375.pkl', 'cache_380.pkl', 'cache_435.pkl', 'cache_465.pkl', 'cache_500.pkl', 'cache_550.pkl'])'''
-    trainer.load_cache()
+    
     trainer.run(starting_game_Num=0)
