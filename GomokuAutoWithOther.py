@@ -16,6 +16,18 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
 import joblib
 
+# 屏幕分辨率字典
+screen_resolutions = {
+    '1920x1080': {'top_left': None, 'bottom_right': None, 'template_border': None, 'type': '1080P'}, # 1080P分辨率，数据暂时未知
+    '2560x1440': {'top_left': None, 'bottom_right': None, 'template_border': None, 'type': '2K'}, # 2K分辨率，数据暂时未知
+    '3840x2160': {'top_left': (1076, 510), 'bottom_right': (1566, 1000), 'template_border': 1300, 'type': '4K'},
+    '3440x1440': {'top_left': (1516, 510), 'bottom_right': (2006, 1000), 'template_border': 1742, 'type': '21:9带鱼屏'},
+}
+# 获取当前屏幕分辨率
+current_resolution = pyautogui.size()
+current_resolution_key = f"{current_resolution.width}x{current_resolution.height}"
+print(f"当前屏幕分辨率: {current_resolution_key}, 屏幕类型: {screen_resolutions[current_resolution_key]['type']}")
+
 class GomokuAutoWithOtherGUI:
     def __init__(self, master):
         self.master = master
@@ -284,9 +296,11 @@ class GomokuAutoWithOtherGUI:
         # 找到匹配的位置
         loc = np.where(result >= threshold)
         if len(loc) == 2:
-            if loc[1][0] < 1300:
+            if loc[1][0] < screen_resolutions[current_resolution_key]['template_border']:
+                print("检测到左侧模板，AI执白")
                 return -1 # 白棋
             else:
+                print("检测到右侧模板，AI执黑")
                 return 1 # 黑棋
         else:
             return None
@@ -324,7 +338,7 @@ class GomokuAutoWithOtherGUI:
         def game_thread():
             screen = capture_board(region=None)  # 截取全屏图像
             # 设置棋盘左上角和右下角的坐标，以及棋盘大小
-            actionMapToCoords = detect_grid_intersections(screen.copy(), top_left=(1076, 510), bottom_right=(1566,1000), board_size=BOARD_SIZE, show_result=False, timeout=0)
+            actionMapToCoords = detect_grid_intersections(screen.copy(), top_left=screen_resolutions[current_resolution_key]['top_left'], bottom_right=screen_resolutions[current_resolution_key]['bottom_right'], board_size=BOARD_SIZE, show_result=False, timeout=0)
             if actionMapToCoords is not None:
                 #self.detect_pieces(screen.copy(), actionMapToCoords, show_result=True, timeout=0)
                 # 获取本地文件夹路径，与"model"文件夹拼接,得到模型文件路径,与当前模型文件名拼接，得到完整模型文件路径

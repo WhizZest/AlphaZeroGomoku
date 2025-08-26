@@ -10,6 +10,18 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import joblib
 
+# 屏幕分辨率字典
+screen_resolutions = {
+    '1920x1080': {'top_left': None, 'bottom_right': None, 'lose_flag_zone': None, 'type': '1080P'}, # 1080P分辨率，数据暂时未知
+    '2560x1440': {'top_left': None, 'bottom_right': None, 'lose_flag_zone': None, 'type': '2K'}, # 2K分辨率，数据暂时未知
+    '3840x2160': {'top_left': (723, 162), 'bottom_right': (1884, 1326), 'lose_flag_zone': (1150, 514, 119, 95), 'type': '4K'},
+    '3440x1440': {'top_left': (1162, 164), 'bottom_right': (2324, 1326), 'lose_flag_zone': (1587, 513, 114, 89), 'type': '21:9带鱼屏'},
+}
+# 获取当前屏幕分辨率
+current_resolution = pyautogui.size()
+current_resolution_key = f"{current_resolution.width}x{current_resolution.height}"
+print(f"当前屏幕分辨率: {current_resolution_key}, 屏幕类型: {screen_resolutions[current_resolution_key]['type']}")
+
 def select_region():
     """ 让用户手动框选棋盘区域 """
     screen = pyautogui.screenshot()
@@ -126,7 +138,7 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
         else:
             time.sleep(wait_time)
             if result is not None and result == -1:
-                board_img = capture_board((1150, 514, 119, 95))
+                board_img = capture_board(screen_resolutions[current_resolution_key]['lose_flag_zone'])  # 截取认输标志区域
                 # 平均颜色为白色
                 if np.mean(board_img) > 210:
                     print(f"AI 认输")
@@ -189,7 +201,7 @@ def save_buffer(buffer):
 if __name__ == "__main__":
     screen = capture_board(region=None)  # 截取全屏图像
     # 设置棋盘左上角和右下角的坐标，以及棋盘大小
-    actionMapToCoords = detect_grid_intersections(screen.copy(), top_left=(723, 162), bottom_right=(1884,1326), board_size=BOARD_SIZE, show_result=True, timeout=0)
+    actionMapToCoords = detect_grid_intersections(screen.copy(), top_left=screen_resolutions[current_resolution_key]['top_left'], bottom_right=screen_resolutions[current_resolution_key]['bottom_right'], board_size=BOARD_SIZE, show_result=True, timeout=0)
     time.sleep(0.5)
     if actionMapToCoords is not None:
         # 获取本地文件夹路径，与"model"文件夹拼接,得到模型文件路径,与当前模型文件名拼接，得到完整模型文件路径
@@ -198,7 +210,7 @@ if __name__ == "__main__":
         ai_play = AlphaZeroNet().to(mcts_device)
         ai_play.load_state_dict(torch.load(model_file_path, map_location=mcts_device, weights_only=True))
         ai_play.eval()
-        current_model_player = -1  # 当前模型玩家, 1表示黑子，-1表示白子
+        current_model_player = 1  # 当前模型玩家, 1表示黑子，-1表示白子
         MCTS_simulations = 800  # MCTS模拟次数
         result, buffer = evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_simulations)
         save_buffer(buffer)
