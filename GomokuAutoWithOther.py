@@ -19,8 +19,8 @@ import joblib
 # 屏幕分辨率字典
 screen_resolutions = {
     '1920x1080': {'top_left': None, 'bottom_right': None, 'template_border': None, 'type': '1080P'}, # 1080P分辨率，数据暂时未知
-    '2560x1440': {'top_left': None, 'bottom_right': None, 'template_border': None, 'type': '2K'}, # 2K分辨率，数据暂时未知
-    '3840x2160': {'top_left': (1076, 510), 'bottom_right': (1566, 1000), 'template_border': 1300, 'type': '4K'},
+    '2560x1440': {'top_left': (1076, 510), 'bottom_right': (1566, 1000), 'template_border': 1300, 'type': '2K'}, # 2K分辨率，数据暂时未知
+    '3840x2160': {'top_left': (1615, 764), 'bottom_right': (2350, 1499), 'template_border': 1955, 'type': '4K'},
     '3440x1440': {'top_left': (1516, 510), 'bottom_right': (2006, 1000), 'template_border': 1742, 'type': '21:9带鱼屏'},
 }
 # 获取当前屏幕分辨率

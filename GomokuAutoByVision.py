@@ -13,8 +13,8 @@ import joblib
 # 屏幕分辨率字典
 screen_resolutions = {
     '1920x1080': {'top_left': None, 'bottom_right': None, 'lose_flag_zone': None, 'type': '1080P'}, # 1080P分辨率，数据暂时未知
-    '2560x1440': {'top_left': None, 'bottom_right': None, 'lose_flag_zone': None, 'type': '2K'}, # 2K分辨率，数据暂时未知
-    '3840x2160': {'top_left': (723, 162), 'bottom_right': (1884, 1326), 'lose_flag_zone': (1150, 514, 119, 95), 'type': '4K'},
+    '2560x1440': {'top_left': (723, 162), 'bottom_right': (1884, 1326), 'lose_flag_zone': (1150, 514, 119, 95), 'type': '2K'}, # 2K分辨率，数据暂时未知
+    '3840x2160': {'top_left': (1084, 246), 'bottom_right': (2820, 1982), 'lose_flag_zone': (1722, 768, 174, 143), 'type': '4K'},
     '3440x1440': {'top_left': (1162, 164), 'bottom_right': (2324, 1326), 'lose_flag_zone': (1587, 513, 114, 89), 'type': '21:9带鱼屏'},
 }
 # 获取当前屏幕分辨率
@@ -88,7 +88,7 @@ def detect_pieces(board_img, intersections, show_result=False, timeout=2000):
         avg_color = np.mean(region, axis=(0, 1))  # 计算局部区域的平均颜色
         b, g, r = avg_color
         
-        if r < 100 and g < 100 and b < 100:  # 接近黑色
+        if r < 80 and g < 80 and b < 80:  # 接近黑色
             board[i, j] = 1  # 黑子
             cv2.circle(board_img, (x, y), radius, (0, 0, 255), -1)
         elif r > 150 and g > 150 and b > 150:  # 接近白色
@@ -178,10 +178,10 @@ def detect_board_change(board_matrix_current, board_matrix_previous):
     for i in range(BOARD_SIZE):
         for j in range(BOARD_SIZE):
             if board_matrix_previous[i, j] != board_matrix_current[i, j]:
-                change_list.append((i, j))
+                change_list.append(((i, j), int(board_matrix_current[i, j])))
     if len(change_list) > 1:
         raise ValueError(f"检测到{len(change_list)}个变化位置: {change_list}")
-    return change_list[0] if len(change_list) == 1 else None
+    return change_list[0][0] if len(change_list) == 1 else None
 
 def save_buffer(buffer):
     """ 保存缓冲区数据 """
