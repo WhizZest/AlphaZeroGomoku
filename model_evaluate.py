@@ -2,6 +2,7 @@ from AlphaZero import GomokuEnv, MCTS_Pure, MCTS, AlphaZeroNet, BOARD_SIZE, mcts
 import keyboard
 import torch.multiprocessing as mp
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import time
 import random
 import torch
